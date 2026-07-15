@@ -101,7 +101,7 @@ function showSpinner(show) {
 }
 
 async function fetchContents(path = "") {
-    const api = `https://api.github.com/repos/okinawapro/okinawapro.github.io/contents/${path}?ref=master`;
+    const api = `https://api.github.com/repos/okinawapro/portfolio/contents/${path}?ref=master`;
     const response = await fetch(api);
     return await response.json();
 }
