@@ -101,13 +101,15 @@ function showSpinner(show) {
 }
 
 const owner = "okinawapro";
-const repo = "portfolio";   // <-- FIXED
+const repo = "portfolio";
 const apiBase = `https://api.github.com/repos/${owner}/${repo}/contents`;
-//`https://api.github.com/repos/okinawapro/portfolio/contents/${path}?ref=master`;
-    
+
 async function fetchContents(path = "") {
-    const api = apiBase;
-    const response = await fetch(api);
+    const url = path === "" 
+        ? apiBase 
+        : `${apiBase}/${encodeURIComponent(path)}`;
+
+    const response = await fetch(url);
     return await response.json();
 }
 
@@ -160,7 +162,7 @@ async function loadDirectory(section, dirPath, fileList) {
         subSection.style.marginLeft = "20px";
 
         const subHeader = document.createElement("h2");
-        subHeader.textContent = dir.path;
+        subHeader.textContent = dir.name;
 
         const subList = document.createElement("div");
         subList.className = "file-list";
@@ -216,7 +218,6 @@ async function init() {
 document.addEventListener("DOMContentLoaded", () => {
     init();
 });
-
 </script>
 
 </body>
