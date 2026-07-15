@@ -100,8 +100,13 @@ function showSpinner(show) {
     document.getElementById("spinner").style.display = show ? "block" : "none";
 }
 
+const owner = "okinawapro";
+const repo = "portfolio";   // <-- FIXED
+const apiBase = `https://api.github.com/repos/${owner}/${repo}/contents`;
+//`https://api.github.com/repos/okinawapro/portfolio/contents/${path}?ref=master`;
+    
 async function fetchContents(path = "") {
-    const api = `https://api.github.com/repos/okinawapro/portfolio/contents/${path}?ref=master`;
+    const api = apiBase;
     const response = await fetch(api);
     return await response.json();
 }
