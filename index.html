@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Rafael's Repo</title>
+<style>
+    body {
+        font-family: Arial, sans-serif;
+        margin: 20px;
+        background: #f5f5f5;
+    }
+
+    #searchBox {
+        width: 100%;
+        padding: 12px;
+        font-size: 18px;
+        margin-bottom: 20px;
+        border-radius: 6px;
+        border: 1px solid #ccc;
+    }
+
+    .section {
+        margin-bottom: 15px;
+        border-radius: 8px;
+        padding: 10px;
+        color: #fff;
+    }
+
+    .section h2 {
+        cursor: pointer;
+        margin: 0;
+        padding: 10px;
+        font-size: 20px;
+    }
+
+    .file-list {
+        display: none;
+        padding: 10px;
+        background: rgba(255,255,255,0.15);
+        border-radius: 6px;
+        margin-top: 10px;
+    }
+
+    .file-item {
+        margin: 5px 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .file-item img {
+        width: 20px;
+        height: 20px;
+    }
+
+    a {
+        color: #fff;
+        text-decoration: underline;
+    }
+</style>
+</head>
+<body>
+
+<h1>Rafael's UMGC classes</h1>
+<p>Here are the links to all the class activities.  Feel free to use, practice, and learn.</p>    
+<div id="container"></div>
+
+<div id="spinner" style="display:none; text-align:center; margin-top:20px;">
+    <img src="https://i.gifer.com/ZZ5H.gif" width="60">
+</div>
+    
+
+<script>
+const colors = [
+    "#4a90e2", "#50e3c2", "#9013fe", "#f5a623",
+    "#d0021b", "#7ed321", "#417505", "#b8e986"
+];
+
+const icons = {
+    "folder": "https://img.icons8.com/fluency/48/folder-invoices.png",
+    "html": "https://img.icons8.com/color/48/html-5.png",
+    "css": "https://img.icons8.com/color/48/css3.png",
+    "js": "https://img.icons8.com/color/48/javascript.png",
+    "png": "https://img.icons8.com/color/48/png.png",
+    "jpg": "https://img.icons8.com/color/48/jpg.png",
+    "jpeg": "https://img.icons8.com/color/48/jpg.png",
+    "gif": "https://img.icons8.com/color/48/gif.png",
+    "svg": "https://img.icons8.com/color/48/svg.png",
+    "md": "https://img.icons8.com/fluency/48/markdown.png",
+    "default": "https://img.icons8.com/fluency/48/document.png"
+};
+
+function getIcon(filename, isDir) {
+    if (isDir) return icons.folder;
+    const ext = filename.split(".").pop().toLowerCase();
+    return icons[ext] || icons.default;
+}
+
+function showSpinner(show) {
+    document.getElementById("spinner").style.display = show ? "block" : "none";
+}
+
+async function fetchContents(path = "") {
+    const api = `https://api.github.com/repos/okinawapro/okinawapro.github.io/contents/${path}?ref=master`;
+    const response = await fetch(api);
+    return await response.json();
+}
+
+async function loadDirectory(section, dirPath, fileList) {
+    if (fileList.dataset.loaded === "true") return;
+
+    showSpinner(true);
+
+    const items = await fetchContents(dirPath);
+    const files = items.filter(i => i.type === "file");
+    const directories = items.filter(i => i.type === "dir");
+
+    // Add files
+    files.forEach(file => {
+        const item = document.createElement("div");
+        item.className = "file-item";
+
+        const icon = document.createElement("img");
+        icon.src = getIcon(file.name, false);
+
+        const link = document.createElement("a");
+        link.href = file.html_url;
+        link.target = "_blank";
+        link.textContent = file.name;
+
+        item.appendChild(icon);
+        item.appendChild(link);
+        fileList.appendChild(item);
+    });
+
+    // Add subdirectories
+    directories.forEach(dir => {
+        const item = document.createElement("div");
+        item.className = "file-item";
+
+        const icon = document.createElement("img");
+        icon.src = getIcon(dir.name, true);
+
+        const label = document.createElement("span");
+        label.textContent = dir.name;
+
+        item.appendChild(icon);
+        item.appendChild(label);
+        fileList.appendChild(item);
+
+        // Create collapsible subdirectory
+        const subSection = document.createElement("div");
+        subSection.className = "section";
+        subSection.style.background = "#333";
+        subSection.style.marginLeft = "20px";
+
+        const subHeader = document.createElement("h2");
+        subHeader.textContent = dir.path;
+
+        const subList = document.createElement("div");
+        subList.className = "file-list";
+        subList.style.display = "none";
+        subList.dataset.loaded = "false";
+
+        subHeader.addEventListener("click", async () => {
+            subList.style.display = subList.style.display === "none" ? "block" : "none";
+            await loadDirectory(subSection, dir.path, subList);
+        });
+
+        subSection.appendChild(subHeader);
+        subSection.appendChild(subList);
+        fileList.appendChild(subSection);
+    });
+
+    fileList.dataset.loaded = "true";
+    showSpinner(false);
+}
+
+async function init() {
+    const container = document.getElementById("container");
+    const rootItems = await fetchContents("");
+
+    const directories = rootItems.filter(i => i.type === "dir");
+
+    let colorIndex = 0;
+
+    directories.forEach(dir => {
+        const section = document.createElement("div");
+        section.className = "section";
+        section.style.background = colors[colorIndex++ % colors.length];
+
+        const header = document.createElement("h2");
+        header.textContent = dir.name;
+
+        const fileList = document.createElement("div");
+        fileList.className = "file-list";
+        fileList.style.display = "none";
+        fileList.dataset.loaded = "false";
+
+        header.addEventListener("click", async () => {
+            fileList.style.display = fileList.style.display === "none" ? "block" : "none";
+            await loadDirectory(section, dir.path, fileList);
+        });
+
+        section.appendChild(header);
+        section.appendChild(fileList);
+        container.appendChild(section);
+    });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    init();
+});
+
+</script>
+
+</body>
+</html>
