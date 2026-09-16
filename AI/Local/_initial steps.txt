@@ -1,0 +1,56 @@
+1. If there is an Nvidia GPU, run "nvidia-smi" at the command prompt.  It will show back the GPU name, driver version, CUDA version reported by the driver, Total GPU memory, and current GPU memory usage. If the system cannot find the GPU or the information is incorrect, try installing a new driver
+
+2. Install Python and make sure it is added to the path.  Verify it got installed by typing "python --version" at the command prompt
+
+2. Install git and make sure it is added to the path.  Verify it got installed by typing "git --version" at the command prompt. This is needed because Z-Image-Turbo reference setup installs the currect diffusers source from its Git repository.
+
+3. Create the directory and virtual environment 
+mkdir c:\projects\zimage-poc
+cd c:\projects\zimage-poc
+
+python -3.13 -m venv .venv   (not mandatory)
+.\.venv\scripts\activate.ps1 (not mandatory)
+
+python -m pip install --upgrade pip
+
+4. Go to the official PyTorch website https://pytorch.org/get-started/locally/
+select the pytorch build, your OS windows, package pip, language Python, CUDA (base on your GPU). this will create the command to run at the command prompt.  In my case it was, pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+
+you can do a quick test after installation by typing 
+python -c "import torch; print(torch.__version__)"
+
+which will return the version number
+Another way to test, is by creating a small python script with the information from the website.
+
+5. Create a requirements.txt file and in it, type the following:
+accelerate
+huggingface_hub
+nvidia-ml-py
+pillow
+psutil
+safetensors
+transformers
+git+https://githum.com/huggingface/diffusers.git
+
+Save the file and run the following
+python -m pip install -r .\requirements.txt
+This will install all the libraries needed.
+
+what does each library do?
+pytorch -> CUDA GPU execution and tensor operations
+diffusers -> Provides ZImagePipeline
+transformers -> text encoding and model components
+accelerate -> model loading and hardware support utilities
+safetensors -> safe loading of model weight files
+huggingface_hub -> downloads the model into local directory
+nvidia-ml-py -> reads hardware information through NVML
+psutil -> reads system RAM
+pillow -> saves generated images as PNG files
+
+6. Create a model directory
+mkdir c:\projects\zimage-poc\models
+
+run the following command to download the model from huggingface
+hf download Tongyi-MAI/Z-Image-Turbo --local-dir .\models\Z-Image-Turbo
+
+
