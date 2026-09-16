@@ -1,0 +1,8 @@
+accelerate
+huggingface_hub
+nvidia-ml-py
+pillow
+psutil
+safetensors
+transformers
+git+http://github.com/huggingface/diffusers.git
