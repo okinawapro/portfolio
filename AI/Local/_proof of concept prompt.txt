@@ -1,9 +1,0 @@
-We are building a python proof of concept script that will use an image generation AI model, Z-Image-Turbo which is already in the model folder. The current hardware configuration is 64GB ram, 12GB VRAM, and a RTX 3500 GPU. Python 3.13 is already installed.
-Do not use a GUI, Web server, cloud inference api, telemetry, or runtime downloads.
-keep Z-Image-Turbo loaded only from a local directory
-use accelerate and pipeline.enable_model_cpu_offload
-do not use pipeline.to("cuda") as the normal execution mode
-default to 1024x1024, 9 steps, guidance_scale=0.0, one image at a time
-save png output and json metadata locally
-add clear error descriptions
-create the generate_zimage.py 
