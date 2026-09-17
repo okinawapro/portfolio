@@ -1,0 +1,7 @@
+
+Duration	Recommended max_new_tokens
+10 sec	256 tokens
+30 sec	768 tokens
+60 sec	1536 tokens
+
+small model will break if over 2000 tokens are used.
