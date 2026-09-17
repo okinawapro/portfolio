@@ -1,0 +1,468 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS Free-Tier Zero-Cost Lab: Self-Contained Auto Scaling & ALB Dashboard Demonstration'
+
+Parameters:
+  VpcCidr:
+    Type: String
+    Default: '10.0.0.0/16'
+    Description: CIDR block for the isolated Lab VPC.
+
+  PublicSubnet1Cidr:
+    Type: String
+    Default: '10.0.1.0/24'
+    Description: CIDR block for Public Subnet 1 (AZ A).
+
+  PublicSubnet2Cidr:
+    Type: String
+    Default: '10.0.2.0/24'
+    Description: CIDR block for Public Subnet 2 (AZ B).
+
+  AmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64'
+    Description: Dynamic SSM pathway for the latest Amazon Linux 2023 AMI (Free Tier Eligible).
+
+  KeyPairName:
+    Type: String
+    Default: 'AutoScalingLabKey'
+    Description: The name of the EC2 KeyPair to create for SSH instance access.
+
+  SSHAccessCidr:
+    Type: String
+    Default: '0.0.0.0/0'
+    Description: IP range permitted to access EC2 instances via SSH (Port 22).
+
+Resources:
+  # =========================================================================
+  # 1. NETWORKING INFRASTRUCTURE (NO NAT GATEWAYS = $0 COST)
+  # =========================================================================
+  LabVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: AutoScaling-Lab-VPC
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: AutoScaling-Lab-IGW
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref LabVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref LabVPC
+      CidrBlock: !Ref PublicSubnet1Cidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: AutoScaling-Public-Subnet-1
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref LabVPC
+      CidrBlock: !Ref PublicSubnet2Cidr
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: AutoScaling-Public-Subnet-2
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref LabVPC
+      Tags:
+        - Key: Name
+          Value: AutoScaling-Public-RouteTable
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref InternetGateway
+
+  Subnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  Subnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # =========================================================================
+  # 2. KEY PAIR CREATION
+  # =========================================================================
+  LabKeyPair:
+    Type: AWS::EC2::KeyPair
+    Properties:
+      KeyName: !Ref KeyPairName
+
+  # =========================================================================
+  # 3. SECURITY GROUPS
+  # =========================================================================
+  LBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow Public HTTP traffic to the Load Balancer
+      VpcId: !Ref LabVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Restrict HTTP to ALB and allow SSH access
+      VpcId: !Ref LabVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref LBSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SSHAccessCidr
+
+  # =========================================================================
+  # 4. APPLICATION LOAD BALANCER
+  # =========================================================================
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: Lab-AutoScaling-ALB
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref LBSecurityGroup
+      Scheme: internet-facing
+      Type: application
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: Lab-AutoScaling-TG
+      VpcId: !Ref LabVPC
+      Port: 80
+      Protocol: HTTP
+      TargetType: instance
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ALBTargetGroup
+
+  # =========================================================================
+  # 5. COMPUTE LAUNCH TEMPLATE (T3.MICRO FREE TIER)
+  # =========================================================================
+  WebServerLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: Lab-AutoScaling-LaunchTemplate
+      LaunchTemplateData:
+        ImageId: !Ref AmiId
+        InstanceType: t3.micro
+        KeyName: !Ref LabKeyPair
+        CreditSpecification:
+          CpuCredits: standard # Prevents Unlimited Mode surcharges
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: true
+            DeviceIndex: 0
+            Groups:
+              - !Ref InstanceSecurityGroup
+        UserData:
+          Fn::Base64:
+            Fn::Sub:
+              - |
+                #!/bin/bash
+                dnf update -y
+                dnf install -y httpd php
+                systemctl start httpd
+                systemctl enable httpd
+                
+                # 1. CPU Usage Endpoint
+                cat << 'EOF' > /var/www/html/cpu.php
+                <?php
+                header('Content-Type: application/json');
+                $load = sys_getloadavg();
+                $cpuPercent = min(100, round(($load[0] / 2) * 100, 1));
+                echo json_encode(['cpu' => $cpuPercent]);
+                ?>
+                EOF
+                
+                # 2. Stress Test Endpoint
+                cat << 'EOF' > /var/www/html/math.php
+                <?php
+                header('Content-Type: application/json');
+                $start_num = isset($_GET['start']) ? (int)$_GET['start'] : 2;
+                $batch_size = 1500; 
+                $primes_found = [];
+                
+                $num = $start_num;
+                while (count($primes_found) < $batch_size) {
+                    $div_count = 0;
+                    for ($i = 1; $i <= $num; $i++) {
+                        if (($num % $i) == 0) { $div_count++; }
+                        if ($div_count > 2) break;
+                    }
+                    if ($div_count == 2) { $primes_found[] = $num; }
+                    $num++;
+                }
+                
+                $imds_token = trim(@file_get_contents('http://169.254.169.254/latest/api/token', false, stream_context_create(['http' => ['method' => 'PUT', 'header' => 'X-aws-ec2-metadata-token-ttl-seconds: 60']])));
+                $opts = ['http' => ['header' => "X-aws-ec2-metadata-token: $imds_token"]];
+                $instance_id = @file_get_contents('http://169.254.169.254/latest/meta-data/instance-id', false, stream_context_create($opts));
+
+                echo json_encode([
+                    'next_start' => $num,
+                    'primes' => $primes_found,
+                    'instance_id' => $instance_id ?: 'Node-Active'
+                ]);
+                ?>
+                EOF
+
+                # 3. Live Dashboard UI
+                cat << 'EOF' > /var/www/html/index.php
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                    <meta charset="UTF-8">
+                    <title>AWS Auto Scaling Student Lab Dashboard</title>
+                    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+                    <style>
+                        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f9; margin: 0; padding: 20px; }
+                        .container { max-width: 1000px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
+                        .header { border-bottom: 2px solid #eaeded; padding-bottom: 15px; margin-bottom: 20px; text-align: center; }
+                        .badge { background: #ff9900; color: white; padding: 6px 12px; border-radius: 20px; font-weight: bold; font-size: 0.9em; }
+                        .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-top: 20px; }
+                        .chart-container { background: #fafafa; padding: 15px; border-radius: 8px; border: 1px solid #e1e4e6; position: relative; height: 320px; }
+                        .log-box { background: #232f3e; color: #00ff00; font-family: "Courier New", monospace; padding: 15px; border-radius: 8px; height: 320px; overflow-y: scroll; font-size: 0.85em; }
+                        .btn { display: block; width: 100%; background: #1a73e8; color: white; border: none; padding: 12px; border-radius: 6px; font-size: 1.1em; font-weight: bold; cursor: pointer; text-align: center; }
+                        .btn:disabled { background: #cccccc; cursor: not-allowed; }
+                    </style>
+                </head>
+                <body>
+                <div class="container">
+                    <div class="header">
+                        <h2>🚀 AWS Auto Scaling Real-Time Lab Dashboard</h2>
+                        <p>Current Target EC2 Node: <span class="badge" id="node-id">Loading...</span></p>
+                    </div>
+
+                    <button class="btn" id="stress-btn" onclick="startLabStressTest()">🔥 Start Prime Number Calculation Stress Test</button>
+
+                    <div class="grid">
+                        <div class="chart-container">
+                            <canvas id="cpuChart"></canvas>
+                        </div>
+                        <div>
+                            <h4 style="margin: 0 0 10px 0;">Live Prime Numbers Stream:</h4>
+                            <div class="log-box" id="prime-log">Ready. Click the button to start the load generation loops...<br></div>
+                        </div>
+                    </div>
+                </div>
+
+                <script>
+                    const ctx = document.getElementById('cpuChart').getContext('2d');
+                    const cpuChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: [],
+                            datasets: [{
+                                label: 'Estimated Instance CPU Utilization (%)',
+                                data: [],
+                                borderColor: '#ff9900',
+                                backgroundColor: 'rgba(255, 153, 0, 0.1)',
+                                borderWidth: 3,
+                                tension: 0.4,
+                                fill: true
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: {
+                                y: { min: 0, max: 100, title: { display: true, text: 'CPU Usage %' } },
+                                x: { title: { display: true, text: 'Timeline (Seconds)' } }
+                            }
+                        }
+                    });
+
+                    let currentStart = 2;
+                    let trackingTimeline = 0;
+                    let isRunning = false;
+
+                    setInterval(async () => {
+                        try {
+                            const response = await fetch('cpu.php');
+                            const data = await response.json();
+                            
+                            trackingTimeline += 2;
+                            cpuChart.data.labels.push(trackingTimeline + 's');
+                            cpuChart.data.datasets[0].data.push(data.cpu);
+                            
+                            if (cpuChart.data.labels.length > 20) {
+                                cpuChart.data.labels.shift();
+                                cpuChart.data.datasets[0].data.shift();
+                            }
+                            cpuChart.update();
+                        } catch (e) { console.error("Metric polling error", e); }
+                    }, 2000);
+
+                    async function calculateNextBatch() {
+                        if (!isRunning) return;
+                        try {
+                            const response = await fetch('math.php?start=' + currentStart);
+                            const data = await response.json();
+                            
+                            document.getElementById('node-id').innerText = data.instance_id;
+                            currentStart = data.next_start;
+
+                            const logBox = document.getElementById('prime-log');
+                            logBox.innerHTML += '[Batch Found] Up to value: ' + currentStart + '<br>';
+                            logBox.scrollTop = logBox.scrollHeight;
+
+                            calculateNextBatch();
+                        } catch (e) { setTimeout(calculateNextBatch, 1000); }
+                    }
+
+                    function startLabStressTest() {
+                        isRunning = true;
+                        document.getElementById('stress-btn').disabled = true;
+                        document.getElementById('stress-btn').innerText = "⚡ Stress Test Running - Math Load Loop Engaged";
+                        document.getElementById('prime-log').innerHTML = "[System] Commencing prime iterations...<br>";
+                        calculateNextBatch();
+                    }
+                </script>
+                </body>
+                </html>
+                EOF
+              - {}
+
+  # =========================================================================
+  # 6. AUTO SCALING GROUP & POLICIES
+  # =========================================================================
+  PrimeCalcAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: Lab-AutoScaling-ASG
+      VPCZoneIdentifier:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WebServerLaunchTemplate
+        Version: !GetAtt WebServerLaunchTemplate.LatestVersionNumber
+      MinSize: '1'
+      MaxSize: '3'
+      DesiredCapacity: '1'
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 60
+      TargetGroupARNs:
+        - !Ref ALBTargetGroup
+      Tags:
+        - Key: Name
+          Value: Lab-AutoScaling-WorkerNode
+          PropagateAtLaunch: true
+
+  # --- SCALE OUT POLICY & ALARM ---
+  HighCPUScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref PrimeCalcAutoScalingGroup
+      PolicyType: StepScaling
+      AdjustmentType: ChangeInCapacity
+      MetricAggregationType: Average
+      EstimatedInstanceWarmup: 60
+      StepAdjustments:
+        - MetricIntervalLowerBound: 0
+          ScalingAdjustment: 1
+
+  CPUAlarmHigh:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Trigger scale-out if CPU average exceeds 60% for 1 minute
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 60.0
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref PrimeCalcAutoScalingGroup
+      AlarmActions:
+        - !Ref HighCPUScalingPolicy
+
+  # --- SCALE IN POLICY & ALARM (AUTOMATIC CLEANUP DEMO) ---
+  LowCPUScalingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref PrimeCalcAutoScalingGroup
+      PolicyType: StepScaling
+      AdjustmentType: ChangeInCapacity
+      MetricAggregationType: Average
+      EstimatedInstanceWarmup: 60
+      StepAdjustments:
+        - MetricIntervalUpperBound: 0
+          ScalingAdjustment: -1
+
+  CPUAlarmLow:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Trigger scale-in if CPU average drops below 15% for 2 minutes
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 15.0
+      ComparisonOperator: LessThanThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref PrimeCalcAutoScalingGroup
+      AlarmActions:
+        - !Ref LowCPUScalingPolicy
+
+# =========================================================================
+# 7. OUTPUTS
+# =========================================================================
+Outputs:
+  ALBDNSName:
+    Description: "Public URL to access the live dashboard."
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+
+  CreatedKeyPair:
+    Description: "Name of the EC2 Key Pair created for SSH access."
+    Value: !Ref LabKeyPair
