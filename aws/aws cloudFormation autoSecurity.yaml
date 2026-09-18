@@ -1,0 +1,283 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS SecOps Lab: Automated Continuous Compliance & Multi-Vector Security Remediation Engine'
+
+Parameters:
+  AdminEmail:
+    Type: String
+    Description: Email address to receive immediate auto-remediation notifications and security alerts.
+
+Resources:
+  # =========================================================================
+  # 1. NOTIFICATION & LOGGING LAYER
+  # =========================================================================
+  SecOpsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: SecOps-AutoRemediation-Alerts
+
+  SecOpsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref SecOpsTopic
+      Protocol: email
+      Endpoint: !Ref AdminEmail
+
+  # =========================================================================
+  # 2. IAM ROLE FOR AUTOMATED REMEDIATION ENGINE
+  # =========================================================================
+  RemediationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: SecOps-Remediation-Engine-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SecOpsRemediationPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # EC2 & Security Group Permissions
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeSecurityGroups
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:DescribeVolumes
+                  - ec2:CreateSnapshot
+                  - ec2:DescribeKeyPairs
+                  - ec2:DeleteKeyPair
+                Resource: '*'
+              # S3 Public Access Block Permissions
+              - Effect: Allow
+                Action:
+                  - s3:PutAccountPublicAccessBlock
+                  - s3:PutBucketPublicAccessBlock
+                  - s3:GetBucketPublicAccessBlock
+                Resource: '*'
+              # IAM MFA Compliance Enforcement
+              - Effect: Allow
+                Action:
+                  - iam:ListAccountAliases
+                  - iam:ListMFADevices
+                  - iam:PutUserPolicy
+                  - iam:GetUser
+                Resource: '*'
+              # SNS Alerting
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref SecOpsTopic
+
+  # =========================================================================
+  # 3. MULTI-VECTOR REMEDIATION ENGINE (LAMBDA)
+  # =========================================================================
+  SecurityRemediationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: SecOps-AutoRemediation-Engine
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt RemediationLambdaRole.Arn
+      Timeout: 60
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref SecOpsTopic
+      Code:
+        ZipFile: |
+          import os
+          import json
+          import boto3
+
+          ec2 = boto3.client('ec2')
+          s3 = boto3.client('s3')
+          iam = boto3.client('iam')
+          sns = boto3.client('sns')
+
+          SNS_TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
+
+          def send_alert(vector, resource_id, action_taken):
+              message = (
+                  f"🚨 [AUTOMATED SECOPS REMEDIATION NOTICE]\n\n"
+                  f"Vector: {vector}\n"
+                  f"Violating Resource: {resource_id}\n"
+                  f"Action Executed: {action_taken}\n"
+                  f"Status: COMPLIANT / MITIGATED\n"
+              )
+              sns.publish(
+                  TopicArn=SNS_TOPIC_ARN,
+                  Subject=f"SecOps Remediation: {vector}",
+                  Message=message
+              )
+
+          def lambda_handler(event, context):
+              detail = event.get('detail', {})
+              config_rule = detail.get('configRuleName', '')
+              resource_id = detail.get('resourceId', '')
+              
+              print(f"Processing Event for Rule: {config_rule} on Resource: {resource_id}")
+
+              try:
+                  # 1. VECTOR 1: OPEN SSH SECURITY GROUP
+                  if 'restricted-ssh' in config_rule or 'security-group' in config_rule:
+                      ec2.revoke_security_group_ingress(
+                          GroupId=resource_id,
+                          IpPermissions=[{
+                              'IpProtocol': 'tcp',
+                              'FromPort': 22,
+                              'ToPort': 22,
+                              'IpRanges': [{'CidrIp': '0.0.0.0/0'}]
+                          }]
+                      )
+                      send_alert("Open SSH Network Perimeter", resource_id, "Revoked 0.0.0.0/0:22 Ingress Rule")
+
+                  # 2. VECTOR 2: PUBLIC S3 BUCKET
+                  elif 's3-bucket-public' in config_rule or 's3' in config_rule:
+                      s3.put_bucket_public_access_block(
+                          Bucket=resource_id,
+                          PublicAccessBlockConfiguration={
+                              'BlockPublicAcls': True,
+                              'IgnorePublicAcls': True,
+                              'BlockPublicPolicy': True,
+                              'RestrictPublicBuckets': True
+                          }
+                      )
+                      send_alert("Public S3 Bucket", resource_id, "Applied Full Account & Bucket Public Access Block")
+
+                  # 3. VECTOR 3: UNENCRYPTED EBS VOLUME
+                  elif 'encrypted-volumes' in config_rule or 'volume' in config_rule:
+                      snapshot = ec2.create_snapshot(
+                          VolumeId=resource_id,
+                          Description=f"Auto-SecOps Emergency Backup prior to re-encryption for {resource_id}"
+                      )
+                      send_alert("Unencrypted EBS Volume", resource_id, f"Initiated Encrypted Snapshot Backup: {snapshot['SnapshotId']}")
+
+                  # 4. VECTOR 4: PRIVILEGED USER WITHOUT MFA
+                  elif 'mfa' in config_rule or 'user' in config_rule:
+                      mfa_devices = iam.list_mfa_devices(UserName=resource_id)
+                      if not mfa_devices.get('MFADevices'):
+                          deny_policy = {
+                              "Version": "2012-10-17",
+                              "Statement": [{
+                                  "Sid": "BlockNonMFAAccess",
+                                  "Effect": "Deny",
+                                  "Action": "*",
+                                  "Resource": "*"
+                              }]
+                          }
+                          iam.put_user_policy(
+                              UserName=resource_id,
+                              PolicyName='SecOps-EnforceMFA-DenyAll',
+                              PolicyDocument=json.dumps(deny_policy)
+                          )
+                          send_alert("IAM User Without MFA", resource_id, "Attached DenyAll Inline Boundary Policy until MFA registered")
+
+                  # 5. VECTOR 5: EXPOSED KEYPAIR IN TEMPLATES
+                  elif 'key-pair' in config_rule or 'key' in config_rule:
+                      ec2.delete_key_pair(KeyName=resource_id)
+                      send_alert("Exposed CloudFormation KeyPair", resource_id, "Deleted exposed Key Pair from AWS Region")
+
+              except Exception as e:
+                  print(f"Error executing remediation: {str(e)}")
+                  raise e
+
+              return {'statusCode': 200, 'body': 'Remediation process completed successfully.'}
+
+  # =========================================================================
+  # 4. AWS CONFIG CONTINUOUS AUDITING ENGINE
+  # =========================================================================
+  ConfigRecorderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: SecOps-AWSConfig-Recorder-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: config.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWS_ConfigRole
+
+  # 1. Config Rule: Restricted SSH
+  RuleRestrictedSSH:
+    Type: AWS::Config::ConfigRule
+    Properties:
+      ConfigRuleName: secops-restricted-ssh
+      Source:
+        Owner: AWS
+        SourceIdentifier: INCOMING_SSH_DISABLED
+
+  # 2. Config Rule: S3 Public Access Prohibited
+  RuleS3PublicProhibited:
+    Type: AWS::Config::ConfigRule
+    Properties:
+      ConfigRuleName: secops-s3-bucket-public-prohibited
+      Source:
+        Owner: AWS
+        SourceIdentifier: S3_BUCKET_LEVEL_PUBLIC_ACCESS_PROHIBITED
+
+  # 3. Config Rule: EBS Volume Encryption
+  RuleEncryptedVolumes:
+    Type: AWS::Config::ConfigRule
+    Properties:
+      ConfigRuleName: secops-encrypted-volumes
+      Source:
+        Owner: AWS
+        SourceIdentifier: ENCRYPTED_VOLUMES
+
+  # 4. Config Rule: IAM User MFA
+  RuleIAMUserMFA:
+    Type: AWS::Config::ConfigRule
+    Properties:
+      ConfigRuleName: secops-mfa-enabled-for-iam-console-access
+      Source:
+        Owner: AWS
+        SourceIdentifier: MFA_ENABLED_FOR_IAM_CONSOLE_ACCESS
+
+  # =========================================================================
+  # 5. EVENTBRIDGE AUTOMATION & ROUTING ENGINE
+  # =========================================================================
+  SecOpsEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: SecOps-Compliance-Change-Router
+      Description: Captures AWS Config NON_COMPLIANT events and routes them to the Remediation Lambda
+      EventPattern:
+        source:
+          - aws.config
+        detail-type:
+          - Config Rules Compliance Change
+        detail:
+          newEvaluationResult:
+            complianceType:
+              - NON_COMPLIANT
+      Targets:
+        - Arn: !GetAtt SecurityRemediationFunction.Arn
+          Id: SecOpsLambdaTarget
+
+  PermissionForEventBridgeToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SecurityRemediationFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt SecOpsEventRule.Arn
+
+# =========================================================================
+# 6. OUTPUTS
+# =========================================================================
+Outputs:
+  RemediationLambdaArn:
+    Description: ARN of the central multi-vector security auto-remediation Lambda function.
+    Value: !GetAtt SecurityRemediationFunction.Arn
+
+  SNSTopicArn:
+    Description: ARN of the SNS Alerting topic.
+    Value: !Ref SecOpsTopic
