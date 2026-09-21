@@ -1,3 +1,7 @@
+#please review before running
+#this template will create automatic remediation that will remove key pairs, disable accounts, lock s3 buckets, etc
+#without asking for confirmation.  Do this on learning environments only.
+
 AWSTemplateFormatVersion: '2010-09-09'
 Description: 'AWS SecOps Lab: Automated Continuous Compliance & Multi-Vector Security Remediation Engine'
 
